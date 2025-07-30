@@ -1,2 +1,2 @@
-# pb-cpp-library-template
-Template project for creating c++ libraries.
+# pb-cpp-data
+A cpp library for working with data.
