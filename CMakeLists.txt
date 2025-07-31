@@ -42,7 +42,7 @@ if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
 
 
     add_executable(pb-cpp-data-test 
-        test/DummyTest.cpp
+        test/MemoryTest.cpp
     )
 
     target_link_libraries(pb-cpp-data-test PRIVATE

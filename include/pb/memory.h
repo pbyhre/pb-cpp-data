@@ -11,6 +11,8 @@
 #include <cstddef> // for size_t
 #include <string>
 #include <algorithm> // for std::min
+#include <mutex>
+
 
 namespace pb {
 
@@ -46,7 +48,7 @@ namespace pb {
         public:
             virtual size_t grow_to_size(size_t needed_size, size_t current_size, size_t max_size) override {
                 // Exponential growth policy
-                return std::max(std::min(current_size * 2, max_size, SIZE_MAX), needed_size);
+                return std::max<size_t>(std::min<size_t>(current_size * 2, max_size), needed_size);
             }
     };
 
@@ -58,7 +60,7 @@ namespace pb {
         public:
             virtual size_t grow_to_size(size_t needed_size, size_t current_size, size_t max_size) override {
                 // Linear growth policy
-                return std::max(std::min(current_size + (current_size / 2), max_size, SIZE_MAX), needed_size);
+                return std::max<size_t>(std::min<size_t>(current_size + (current_size / 2), max_size), needed_size);
             }
     };
 
@@ -75,7 +77,7 @@ namespace pb {
 
             virtual size_t grow_to_size(size_t needed_size, size_t current_size, size_t max_size) override {
                 // Percentage growth policy
-                return std::max(std::min(size_t(current_size * (1 + (growth_percentage_ / 100))), max_size, SIZE_MAX), needed_size);
+                return std::max<size_t>(std::min<size_t>(current_size * (1 + (growth_percentage_ / 100)), max_size), needed_size);
             }
     };
 
@@ -99,6 +101,20 @@ namespace pb {
             }
 
             void initialize(bool force_init = false) {
+                std::lock_guard<std::recursive_mutex> lock(mutex_);
+
+                if (data_) {
+                    if (force_init) {
+                        // If forcing re-initialization, free existing data
+                        free(data_);
+                        data_ = nullptr;
+                        current_size_ = 0;
+                    } else {
+                        // If already initialized and not forcing re-initialization, do nothing
+                        return;
+                    }
+                }
+
                 if (lazy_init_ && !force_init) {
                     // Lazy initialization don't do anything yet
                 } else {
@@ -123,6 +139,8 @@ namespace pb {
             }
 
             size_t read(void* buffer, size_t size, size_t offset = 0) {
+                std::lock_guard<std::recursive_mutex> lock(mutex_);
+
                 if (offset + size > current_size_) {
                     throw std::out_of_range("Read exceeds current memory size");
                 }
@@ -131,10 +149,7 @@ namespace pb {
             }
 
             size_t write(const void* buffer, size_t size, size_t offset = 0) {
-                
-                if (offset + size > max_size_) {
-                    throw std::out_of_range("Write exceeds maximum memory size");
-                }
+                std::lock_guard<std::recursive_mutex> lock(mutex_);
 
                 if (offset + size > current_size_) {
                     
@@ -142,6 +157,11 @@ namespace pb {
                 }
                 memcpy(static_cast<char*>(data_) + offset, buffer, size);
                 return size;
+            }
+
+            size_t current_size() {
+                std::lock_guard<std::recursive_mutex> lock(mutex_);
+                return current_size_;
             }
             
 
@@ -151,34 +171,39 @@ namespace pb {
             size_t initial_size_ = 0;       // Size of the data in bytes
             size_t max_size_ = SIZE_MAX;    // Maximum size of the data in bytes
             size_t current_size_ = 0;       // Current size of the data in bytes
-            bool lazy_init_ = false;  // Flag for lazy initialization
+            bool lazy_init_ = false;        // Flag for lazy initialization
+            std::recursive_mutex mutex_;    // Mutex for thread safety
 
         private:            
             void grow(size_t needed_size) {
-                if (needed_size > max_size_) {
-                    throw std::runtime_error("Memory growth not allowed.  Allocation exceeds maximum size.");
-                }
+                std::lock_guard<std::recursive_mutex> lock(mutex_);
+
                 // data_ will be nullptr if lazy initialization is used and not yet initialized
                 if (data_ == nullptr) {
                     initialize(true);
                 }
-                else {
-                    size_t required_size = growth_policy_.grow_to_size(needed_size, current_size_, max_size_);
-                    if (required_size == current_size_) {
-                        throw std::runtime_error("Memory growth not allowed.  Maximum size reached.");
-                    }
-                    void* new_data = realloc(data_, required_size);
-                    if (!new_data) {    
-                        throw std::runtime_error("Memory reallocation failed");
-                    }
-                    data_ = new_data;
-                    memset(static_cast<char*>(data_) + current_size_, 0, required_size - current_size_);
-                    current_size_ = required_size;
+
+                // Check if the current size is sufficient
+                if (needed_size <= current_size_) {
+                    return; // No need to grow
+                }
+
+                if (needed_size > max_size_) {
+                    throw std::runtime_error("Memory growth not allowed.  Allocation exceeds maximum size.");
                 }
                 
-                
-                // Here you would typically reallocate memory to the new size
-            }
+                size_t new_size = growth_policy_.grow_to_size(needed_size, current_size_, max_size_);
+                if (new_size == current_size_ && new_size == max_size_) {
+                    throw std::runtime_error("Memory growth not allowed.  Maximum size reached.");
+                }
+                void* new_data = realloc(data_, new_size);
+                if (!new_data) {    
+                    throw std::runtime_error("Memory reallocation failed");
+                }
+                data_ = new_data;
+                memset(static_cast<char*>(data_) + current_size_, 0, new_size - current_size_);
+                current_size_ = new_size;
+           }
 
     };
 
